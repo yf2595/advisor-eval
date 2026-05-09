@@ -46,6 +46,21 @@ def aggregate_metrics(df: pd.DataFrame) -> pd.DataFrame:
     agg["advisor_calls_mean"] = agg["advisor_calls_mean"].round(2)
     agg["steps_mean"] = agg["steps_mean"].round(2)
 
+    if "tool_calls" in df.columns:
+        agg_tool_calls = df.groupby("method")["tool_calls"].mean().rename("tool_calls_mean")
+        agg = agg.merge(agg_tool_calls, on="method", how="left")
+        agg["tool_calls_mean"] = agg["tool_calls_mean"].fillna(0.0).round(2)
+
+    if "tool_errors" in df.columns:
+        agg_tool_errors = df.groupby("method")["tool_errors"].mean().rename("tool_errors_mean")
+        agg = agg.merge(agg_tool_errors, on="method", how="left")
+        agg["tool_errors_mean"] = agg["tool_errors_mean"].fillna(0.0).round(2)
+
+    if "dead_end_count" in df.columns:
+        agg_dead_ends = df.groupby("method")["dead_end_count"].mean().rename("dead_ends_mean")
+        agg = agg.merge(agg_dead_ends, on="method", how="left")
+        agg["dead_ends_mean"] = agg["dead_ends_mean"].fillna(0.0).round(2)
+
     return agg
 
 
@@ -307,6 +322,192 @@ def plot_difficulty_split(df: pd.DataFrame) -> None:
     print(f"  Saved: {PLOTS_DIR / 'difficulty_split.png'}")
 
 
+def compute_gaia_agentic_metrics(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Compute GAIA-specific tool-use and advisor rescue metrics."""
+    if df.empty or "dataset" not in df.columns:
+        return None
+    gaia = df[df["dataset"] == "gaia"]
+    if gaia.empty:
+        return None
+
+    has_tool_calls = "tool_calls" in gaia.columns
+    has_tool_errors = "tool_errors" in gaia.columns
+    has_recovery = "recovery_success" in gaia.columns
+    has_adv_after_error = "advisor_calls_after_error" in gaia.columns
+
+    rows = []
+    for method, group in gaia.groupby("method"):
+        total_calls = group["tool_calls"].sum() if has_tool_calls else 0
+        total_errors = group["tool_errors"].sum() if has_tool_errors else 0
+        tool_error_rate = (total_errors / total_calls) if total_calls > 0 else 0.0
+        recovery_tasks = group[group["tool_errors"] > 0] if has_tool_errors else pd.DataFrame()
+        recovery_rate = (
+            recovery_tasks["recovery_success"].mean() * 100
+            if not recovery_tasks.empty and has_recovery
+            else 0.0
+        )
+        advisor_rescue_pool = (
+            group[group["advisor_calls_after_error"] > 0]
+            if has_adv_after_error
+            else pd.DataFrame()
+        )
+        advisor_rescue_rate = (
+            advisor_rescue_pool["correct"].mean() * 100 if not advisor_rescue_pool.empty else 0.0
+        )
+        advisor_calls_mean = group["advisor_calls"].mean() if "advisor_calls" in group.columns else 0.0
+        success = group["correct"].mean() * 100
+        advisor_intervention_efficiency = success / advisor_calls_mean if advisor_calls_mean > 0 else 0.0
+        first_step_total = group["advisor_first_step_total"].sum() if "advisor_first_step_total" in group.columns else 0
+        first_step_followed = (
+            group["advisor_followed_first_step_count"].sum()
+            if "advisor_followed_first_step_count" in group.columns
+            else 0
+        )
+        first_step_follow_rate = (100.0 * first_step_followed / first_step_total) if first_step_total else 0.0
+        repeated_query_rate = (
+            group["repeated_query_violations"].sum() / total_calls
+            if has_tool_calls and "repeated_query_violations" in group.columns and total_calls > 0
+            else 0.0
+        )
+        blocked_host_rehit_rate = (
+            group["blocked_host_rehits"].sum() / total_calls
+            if has_tool_calls and "blocked_host_rehits" in group.columns and total_calls > 0
+            else 0.0
+        )
+
+        rows.append({
+            "method": method,
+            "task_success_rate_%": round(success, 2),
+            "tool_error_rate": round(tool_error_rate, 4),
+            "error_recovery_rate_%": round(recovery_rate, 2),
+            "advisor_rescue_rate_%": round(advisor_rescue_rate, 2),
+            "advisor_intervention_efficiency": round(advisor_intervention_efficiency, 3),
+            "advisor_followed_first_step_rate_%": round(first_step_follow_rate, 2),
+            "repeated_query_violation_rate": round(repeated_query_rate, 4),
+            "blocked_host_rehit_rate": round(blocked_host_rehit_rate, 4),
+        })
+    return pd.DataFrame(rows)
+
+
+def check_gaia_smoke_gates(df: pd.DataFrame) -> dict[str, bool] | None:
+    """Check smoke gates: strong > cheap and advisor >= cheap on GAIA."""
+    if df.empty or "dataset" not in df.columns:
+        return None
+    gaia = df[df["dataset"] == "gaia"]
+    if gaia.empty:
+        return None
+    by_method = gaia.groupby("method")["correct"].mean().to_dict()
+    cheap = by_method.get("cheap_only")
+    strong = by_method.get("strong_only_tool_agent", by_method.get("strong_only"))
+    advisor = by_method.get("advisor_model_driven")
+    if cheap is None or strong is None or advisor is None:
+        return None
+    return {
+        "strong_beats_cheap": strong > cheap,
+        "advisor_at_least_cheap": advisor >= cheap,
+    }
+
+
+def plot_gaia_success_vs_tool_error(df: pd.DataFrame) -> None:
+    """Scatter: method success vs tool error rate for GAIA."""
+    _ensure_plots_dir()
+    gaia_metrics = compute_gaia_agentic_metrics(df)
+    if gaia_metrics is None or gaia_metrics.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.scatter(
+        gaia_metrics["tool_error_rate"] * 100,
+        gaia_metrics["task_success_rate_%"],
+        s=90,
+        c="#3F51B5",
+        zorder=5,
+    )
+    for _, row in gaia_metrics.iterrows():
+        ax.annotate(
+            row["method"],
+            (row["tool_error_rate"] * 100, row["task_success_rate_%"]),
+            textcoords="offset points",
+            xytext=(8, 4),
+            fontsize=8,
+        )
+    ax.set_xlabel("Tool Error Rate (%)")
+    ax.set_ylabel("Task Success Rate (%)")
+    ax.set_title("GAIA: Success vs Tool Error Rate")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(PLOTS_DIR / "gaia_success_vs_tool_error.png", dpi=150)
+    plt.close()
+    print(f"  Saved: {PLOTS_DIR / 'gaia_success_vs_tool_error.png'}")
+
+
+def plot_gaia_advisor_rescue(df: pd.DataFrame) -> None:
+    """Bar chart: advisor rescue metrics by method for GAIA."""
+    _ensure_plots_dir()
+    gaia_metrics = compute_gaia_agentic_metrics(df)
+    if gaia_metrics is None or gaia_metrics.empty:
+        return
+
+    methods = gaia_metrics["method"].tolist()
+    x = np.arange(len(methods))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.bar(
+        x - width / 2,
+        gaia_metrics["error_recovery_rate_%"],
+        width,
+        label="Error Recovery Rate (%)",
+        color="#009688",
+    )
+    ax.bar(
+        x + width / 2,
+        gaia_metrics["advisor_rescue_rate_%"],
+        width,
+        label="Advisor Rescue Rate (%)",
+        color="#FF5722",
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(methods, rotation=30, ha="right")
+    ax.set_ylabel("Rate (%)")
+    ax.set_title("GAIA: Recovery and Advisor Rescue")
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout()
+    plt.savefig(PLOTS_DIR / "gaia_advisor_rescue.png", dpi=150)
+    plt.close()
+    print(f"  Saved: {PLOTS_DIR / 'gaia_advisor_rescue.png'}")
+
+
+def compute_hotpot_fullwiki_breakdown(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Per-question-type accuracy for HotpotQA fullwiki JSONL results."""
+    if df.empty or "dataset" not in df.columns:
+        return None
+    hp = df[df["dataset"] == "hotpotqa_fullwiki"]
+    if hp.empty:
+        return None
+
+    def _qtype(row: pd.Series) -> str:
+        meta = row.get("metadata")
+        if isinstance(meta, dict):
+            return str(meta.get("type", "unknown"))
+        return "unknown"
+
+    hp = hp.copy()
+    hp["_qtype"] = hp.apply(_qtype, axis=1)
+    rows: list[dict] = []
+    for (method, qtype), g in hp.groupby(["method", "_qtype"]):
+        rows.append({
+            "method": method,
+            "question_type": qtype,
+            "n": len(g),
+            "accuracy_%": round(g["correct"].mean() * 100, 2),
+        })
+    if not rows:
+        return None
+    out = pd.DataFrame(rows)
+    return out.sort_values(["question_type", "method"])
+
+
 # ------------------------------------------------------------------
 # Main analysis entry point
 # ------------------------------------------------------------------
@@ -337,6 +538,20 @@ def analyse_results(results_dir: str | Path) -> None:
         print(f"\n--- {ds.upper()} ---")
         print(ds_agg[cols].to_string(index=False))
 
+    gaia_metrics = compute_gaia_agentic_metrics(df)
+    if gaia_metrics is not None and not gaia_metrics.empty:
+        print("\n--- GAIA Agentic Metrics ---")
+        print(gaia_metrics.to_string(index=False))
+    hp_break = compute_hotpot_fullwiki_breakdown(df)
+    if hp_break is not None and not hp_break.empty:
+        print("\n--- HotpotQA Fullwiki (by type) ---")
+        print(hp_break.to_string(index=False))
+    gates = check_gaia_smoke_gates(df)
+    if gates is not None:
+        print("\n--- GAIA Smoke Gates ---")
+        print(f"strong > cheap: {gates['strong_beats_cheap']}")
+        print(f"advisor >= cheap: {gates['advisor_at_least_cheap']}")
+
     # Plots
     print("\nGenerating plots...")
     plot_three_axis_summary(df)
@@ -346,4 +561,6 @@ def analyse_results(results_dir: str | Path) -> None:
     plot_latency_distribution(df)
     plot_policy_comparison(df)
     plot_difficulty_split(df)
+    plot_gaia_success_vs_tool_error(df)
+    plot_gaia_advisor_rescue(df)
     print("Done.")

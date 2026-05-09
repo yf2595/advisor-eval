@@ -36,16 +36,21 @@ class RandomPolicy:
 
 
 class FailureBasedPolicy:
-    """Escalate when the executor's output looks like a failure."""
+    """Escalate only on genuine failures: empty output or no answer produced."""
 
     def should_escalate(self, step: int, result: dict[str, Any], state: dict[str, Any]) -> bool:
         text = result.get("text", "")
         if not text.strip():
             return True
 
-        prev_answers = state.get("prev_answers", [])
-        current = result.get("answer")
-        if current and prev_answers and current == prev_answers[-1]:
+        if result.get("done") and result.get("answer") is None:
+            return True
+
+        if result.get("tool_error", False) or result.get("parse_error", False):
+            return True
+
+        # Escalate when repeated dead-ends suggest the executor is stuck.
+        if state.get("dead_end_count", 0) >= 2:
             return True
 
         return False
@@ -58,6 +63,20 @@ class SelfEvalPolicy:
         self.threshold = threshold
 
     def should_escalate(self, step: int, result: dict[str, Any], state: dict[str, Any]) -> bool:
+        confidence = result.get("confidence", 1.0)
+        return confidence < self.threshold
+
+
+class FailureOrLowConfidencePolicy:
+    """Escalate if failure-based signals OR confidence is below a threshold (logical OR)."""
+
+    def __init__(self, threshold: float = 0.75):
+        self._failure = FailureBasedPolicy()
+        self.threshold = threshold
+
+    def should_escalate(self, step: int, result: dict[str, Any], state: dict[str, Any]) -> bool:
+        if self._failure.should_escalate(step, result, state):
+            return True
         confidence = result.get("confidence", 1.0)
         return confidence < self.threshold
 
@@ -85,6 +104,26 @@ POLICY_REGISTRY: dict[str, Callable[..., EscalationPolicy]] = {
 
 def get_policy(name: str, config: dict[str, Any]) -> EscalationPolicy:
     """Instantiate a policy by name with config-driven parameters."""
+    if name.startswith("self_eval_t"):
+        try:
+            threshold = float(name.split("self_eval_t", 1)[1])
+        except ValueError as exc:
+            raise ValueError(
+                "Invalid self_eval threshold policy name. "
+                "Use format self_eval_t<value>, e.g. self_eval_t0.25"
+            ) from exc
+        return SelfEvalPolicy(threshold=threshold)
+
+    if name.startswith("failure_or_conf_t"):
+        try:
+            threshold = float(name.split("failure_or_conf_t", 1)[1])
+        except ValueError as exc:
+            raise ValueError(
+                "Invalid failure_or_conf policy name. "
+                "Use format failure_or_conf_t<value>, e.g. failure_or_conf_t0.75"
+            ) from exc
+        return FailureOrLowConfidencePolicy(threshold=threshold)
+
     if name not in POLICY_REGISTRY:
         raise ValueError(f"Unknown policy '{name}'. Choose from: {list(POLICY_REGISTRY.keys())}")
 

@@ -56,8 +56,22 @@ class TaskLog:
 
     steps: int = 0
     advisor_calls: int = 0
+    advisor_guidance: list[dict[str, Any]] = field(default_factory=list)
     confidence_scores: list[float] = field(default_factory=list)
     step_latencies: list[float] = field(default_factory=list)
+    tool_calls: int = 0
+    tool_errors: int = 0
+    recovery_success: bool = False
+    advisor_after_error_rate: float = 0.0
+    advisor_calls_after_error: int = 0
+    dead_end_count: int = 0
+    tool_trace: list[dict[str, Any]] = field(default_factory=list)
+    repeated_query_violations: int = 0
+    blocked_host_rehits: int = 0
+    advisor_followed_first_step_count: int = 0
+    advisor_first_step_total: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+    run_metadata: dict[str, Any] = field(default_factory=dict)
 
     cached: bool = False
 
@@ -66,6 +80,8 @@ class TaskLog:
             "task_id": self.task_id,
             "dataset": self.dataset,
             "method": self.method,
+            "question": self.question,
+            "metadata": self.metadata,
             "prediction": self.prediction,
             "ground_truth": self.ground_truth,
             "correct": self.correct,
@@ -77,8 +93,21 @@ class TaskLog:
             "latency_advisor_s": round(self.latency_advisor_s, 4),
             "steps": self.steps,
             "advisor_calls": self.advisor_calls,
+            "advisor_guidance": self.advisor_guidance,
+            "advisor_calls_after_error": self.advisor_calls_after_error,
             "confidence_scores": [round(c, 4) for c in self.confidence_scores],
             "step_latencies": [round(s, 4) for s in self.step_latencies],
+            "tool_calls": self.tool_calls,
+            "tool_errors": self.tool_errors,
+            "recovery_success": self.recovery_success,
+            "advisor_after_error_rate": round(self.advisor_after_error_rate, 4),
+            "dead_end_count": self.dead_end_count,
+            "tool_trace": self.tool_trace,
+            "repeated_query_violations": self.repeated_query_violations,
+            "blocked_host_rehits": self.blocked_host_rehits,
+            "advisor_followed_first_step_count": self.advisor_followed_first_step_count,
+            "advisor_first_step_total": self.advisor_first_step_total,
+            "run_metadata": self.run_metadata,
             "cached": self.cached,
         }
 

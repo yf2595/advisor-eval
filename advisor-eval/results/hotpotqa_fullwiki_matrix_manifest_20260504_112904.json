@@ -1,0 +1,57 @@
+{
+  "dataset": "hotpotqa_fullwiki",
+  "samples": 100,
+  "created_utc": "20260504_112904",
+  "executor": "gpt-5.4-nano",
+  "advisor_model": "gpt-5.4",
+  "runs": [
+    {
+      "method": "cheap",
+      "policy": "none",
+      "label": "cheap",
+      "jsonl": "results\\hotpotqa_fullwiki_cheap_none_20260504_112912.jsonl"
+    },
+    {
+      "method": "strong",
+      "policy": "none",
+      "label": "strong",
+      "jsonl": "results\\hotpotqa_fullwiki_strong_none_20260504_114528.jsonl"
+    },
+    {
+      "method": "advisor",
+      "policy": "failure_based",
+      "label": "advisor_failure_based",
+      "jsonl": "results\\hotpotqa_fullwiki_advisor_failure_based_20260504_120436.jsonl"
+    },
+    {
+      "method": "advisor",
+      "policy": "model_driven",
+      "label": "advisor_model_driven",
+      "jsonl": "results\\hotpotqa_fullwiki_advisor_model_driven_20260504_122734.jsonl"
+    },
+    {
+      "method": "advisor",
+      "policy": "self_eval_t0.25",
+      "label": "advisor_self_eval_t0.25",
+      "jsonl": "results\\hotpotqa_fullwiki_advisor_self_eval_t0.25_20260504_125137.jsonl"
+    },
+    {
+      "method": "advisor",
+      "policy": "self_eval_t0.5",
+      "label": "advisor_self_eval_t0.5",
+      "jsonl": "results\\hotpotqa_fullwiki_advisor_self_eval_t0.5_20260504_131746.jsonl"
+    },
+    {
+      "method": "advisor",
+      "policy": "self_eval_t0.75",
+      "label": "advisor_self_eval_t0.75",
+      "jsonl": "results\\hotpotqa_fullwiki_advisor_self_eval_t0.75_20260504_134318.jsonl"
+    },
+    {
+      "method": "advisor",
+      "policy": "failure_or_conf_t0.75",
+      "label": "advisor_failure_or_conf_t0.75",
+      "jsonl": "results\\hotpotqa_fullwiki_advisor_failure_or_conf_t0.75_20260504_141148.jsonl"
+    }
+  ]
+}

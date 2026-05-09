@@ -20,6 +20,7 @@ When you have a final answer, output it on a line starting with "FINAL ANSWER: "
 followed by ONLY the answer value (a number, a name, etc.). No extra text after it.
 
 Think step by step. Be concise.\
+Before finalizing, verify answer format exactly matches the question.\
 """
 
 CONFIDENCE_PROMPT = """\
@@ -62,7 +63,7 @@ class ExecutorAgent:
             messages=messages,
             temperature=self.temperature,
             seed=self.seed,
-            max_tokens=2048,
+            max_completion_tokens=2048,
         )
         latency = time.perf_counter() - t0
 
@@ -97,7 +98,7 @@ class ExecutorAgent:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             seed=self.seed,
-            max_tokens=16,
+            max_completion_tokens=16,
         )
         latency = time.perf_counter() - t0
 

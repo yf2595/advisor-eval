@@ -6,19 +6,45 @@ from dataclasses import dataclass
 from openai import OpenAI
 
 ADVISOR_SYSTEM_PROMPT = """\
-You are a strategic advisor assisting a weaker executor model. You see the \
-executor's full reasoning chain.
+You are the strategic advisor to a weaker tool-using executor.
+You are consulted ONLY when the executor is blocked; act fast and concrete.
+Prioritize plan repair and next best action over broad exploration.
 
-Your job:
-1. Identify where the executor's reasoning went wrong or could be improved.
-2. Provide concise guidance: a corrected plan, a course correction, or a \
-   stop signal if the answer looks correct.
-3. Use enumerated steps, not lengthy explanations.
+Output EXACTLY this structure (no preamble, no filler, <=350 tokens):
+DIAGNOSIS: one sentence naming the specific blocker (wrong tool, bad
+query, misread tool output, stuck in a loop, formatting mistake, budget
+pressure).
+NEXT: up to 5 numbered steps. Each step names ONE tool and the exact
+input to try, or says "finalize with <FORMAT>" where FORMAT describes
+the answer shape (e.g. "comma-separated list with spaces", "digits
+only, divided by 1000", "phrase without INT./scene directive"). Every
+step must be NEW (never repeat a query already tried verbatim).
+The first NEXT step must be unambiguous and immediately executable.
+AVOID: up to 3 short bullets listing pitfalls or dead-ends already
+seen in the trace (URL types that 403, queries that returned nothing,
+misleading sources).
 
-Rules:
-- Do NOT produce the final answer yourself.
-- Do NOT repeat the executor's work. Only add what is missing or wrong.
-- Keep your response under 500 tokens.\
+Hard rules:
+- Never reveal or restate the final answer, value, number, name, or list.
+- Never reproduce tool outputs or write the executor's JSON schema.
+- If the executor is about to emit a final answer that is clearly hedged
+  or empty (e.g. "I can't find", "unknown", "N/A", ""), NEXT must force
+  ONE new source/tool before finalizing. If the executor already has a
+  concrete-looking answer (a number, a name, a specific phrase) do NOT
+  order more searches -- only coach the format, e.g. "finalize with
+  <FORMAT>".
+- If the trace shows the same (tool, query) 2+ times, NEXT MUST
+  propose a different tool or clearly different keywords.
+- If a host has already failed (403/404/empty) 2+ times, do NOT tell the
+  executor to fetch that host again; pick a different host or switch to
+  web_search / wiki_search / arxiv_search.
+- If the question requires a strict format (comma-list, unit, rounding,
+  name-only), DIAGNOSIS MUST flag it and the last NEXT step MUST be a
+  "finalize with <FORMAT>" instruction matching the question literally.
+- Prefer concrete tool parameters over generic advice (exact query/url/id/json).
+- If parse/format issues are visible, include one NEXT step that explains
+  exactly how to parse the observed tool response into the target answer.
+- Stay under 350 tokens. Use short bullets. No filler, no preamble.\
 """
 
 
@@ -60,7 +86,7 @@ class AdvisorAgent:
             messages=messages,
             temperature=self.temperature,
             seed=self.seed,
-            max_tokens=512,
+            max_completion_tokens=400,
         )
         latency = time.perf_counter() - t0
 
@@ -75,16 +101,31 @@ class AdvisorAgent:
         return text, stats
 
     @staticmethod
-    def integrate_advice(messages: list[dict], guidance: str) -> list[dict]:
-        """Inject advisor guidance into the conversation so the executor sees it."""
+    def integrate_advice(
+        messages: list[dict],
+        guidance: str,
+        format_hint: str | None = None,
+    ) -> list[dict]:
+        """Inject advisor guidance into the conversation so the executor sees it.
+
+        `format_hint` lets callers pass a dataset-specific reminder about how
+        to emit the final answer (JSON schema for GAIA, 'FINAL ANSWER:' prefix
+        for QA tasks). If omitted, a directive default is used that orders
+        the executor to act on step 1 of the NEXT list immediately.
+        """
+        default_hint = (
+            "On your NEXT turn: execute step 1 of the advisor's NEXT list "
+            "exactly, unless it is clearly impossible. Do NOT repeat any "
+            "query listed in AVOID or any query you already tried. Keep "
+            "the same response format you were asked to use."
+        )
+        suffix = format_hint.strip() if format_hint else default_hint
         return messages + [
             {
                 "role": "user",
                 "content": (
                     f"[ADVISOR GUIDANCE]\n{guidance}\n[/ADVISOR GUIDANCE]\n\n"
-                    "Continue solving the task using this guidance. "
-                    "When you have the final answer, output it on a line "
-                    "starting with 'FINAL ANSWER: '."
+                    f"{suffix}"
                 ),
             }
         ]
@@ -112,7 +153,7 @@ class AdvisorAgent:
             messages=messages,
             temperature=self.temperature,
             seed=self.seed,
-            max_tokens=2048,
+            max_completion_tokens=2048,
         )
         latency = time.perf_counter() - t0
 
