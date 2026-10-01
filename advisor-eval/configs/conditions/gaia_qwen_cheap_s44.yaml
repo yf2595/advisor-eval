@@ -1,0 +1,6 @@
+condition_id: gaia_qwen_cheap_s44
+benchmark: gaia
+executor: qwen3.5-9b
+advisor: qwen3.6-27b
+method: cheap
+seed: 44

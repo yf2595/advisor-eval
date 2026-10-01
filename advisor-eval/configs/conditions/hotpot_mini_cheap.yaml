@@ -1,0 +1,6 @@
+condition_id: hotpot_mini_cheap
+benchmark: hotpot
+executor: gpt-4.1-mini
+advisor: gpt-5.4
+method: cheap
+seed: 42

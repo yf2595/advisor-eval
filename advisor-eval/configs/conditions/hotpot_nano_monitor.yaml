@@ -1,0 +1,11 @@
+condition_id: hotpot_nano_monitor
+benchmark: hotpot
+executor: gpt-5.4-nano
+advisor: gpt-5.4
+method: advisor
+policy: monitor
+tau: 0.75
+message_format: dna_compact
+speaker: advisor
+seed: 42
+loop_guards: false

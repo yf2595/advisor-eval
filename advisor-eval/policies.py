@@ -28,15 +28,16 @@ class FixedIntervalPolicy:
 class RandomPolicy:
     """Escalate with a fixed probability each step."""
 
-    def __init__(self, prob: float = 0.3):
+    def __init__(self, prob: float = 0.3, seed: int = 42):
         self.prob = prob
+        self.rng = random.Random(seed)
 
     def should_escalate(self, step: int, result: dict[str, Any], state: dict[str, Any]) -> bool:
-        return random.random() < self.prob
+        return self.rng.random() < self.prob
 
 
 class FailureBasedPolicy:
-    """Escalate only on genuine failures: empty output or no answer produced."""
+    """Monitor: escalate on visible breakdowns (tool error, malformed output, repeated identical call)."""
 
     def should_escalate(self, step: int, result: dict[str, Any], state: dict[str, Any]) -> bool:
         text = result.get("text", "")
@@ -47,6 +48,9 @@ class FailureBasedPolicy:
             return True
 
         if result.get("tool_error", False) or result.get("parse_error", False):
+            return True
+
+        if state.get("duplicate_query", False):
             return True
 
         # Escalate when repeated dead-ends suggest the executor is stuck.
@@ -132,7 +136,10 @@ def get_policy(name: str, config: dict[str, Any]) -> EscalationPolicy:
     if name == "fixed_interval":
         return FixedIntervalPolicy(interval=policy_cfg.get("fixed_interval", 3))
     elif name == "random_prob":
-        return RandomPolicy(prob=policy_cfg.get("random_prob", 0.3))
+        return RandomPolicy(
+            prob=policy_cfg.get("random_prob", 0.3),
+            seed=int(config.get("run", {}).get("seed", 42)),
+        )
     elif name == "self_eval":
         return SelfEvalPolicy(threshold=policy_cfg.get("threshold", 0.6))
     elif name == "failure_based":

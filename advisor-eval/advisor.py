@@ -3,7 +3,8 @@
 import time
 from dataclasses import dataclass
 
-from openai import OpenAI
+from experiment.openai_chat import chat_completions_create
+from experiment.openai_client import make_openai_client
 
 ADVISOR_SYSTEM_PROMPT = """\
 You are the strategic advisor to a weaker tool-using executor.
@@ -56,11 +57,22 @@ class AdvisorCallStats:
 
 
 class AdvisorAgent:
-    def __init__(self, model: str, temperature: float = 0.0, seed: int = 42):
-        self.client = OpenAI()
+    def __init__(
+        self,
+        model: str,
+        temperature: float = 0.0,
+        seed: int = 42,
+        system_prompt: str | None = None,
+        max_completion_tokens: int = 400,
+    ):
+        self.client = make_openai_client()
         self.model = model
         self.temperature = temperature
         self.seed = seed
+        self.system_prompt = (
+            ADVISOR_SYSTEM_PROMPT if system_prompt is None else system_prompt
+        )
+        self.max_completion_tokens = max_completion_tokens
 
     def advise(self, conversation: list[dict]) -> tuple[str, AdvisorCallStats]:
         """Provide strategic guidance given the full conversation context.
@@ -68,7 +80,7 @@ class AdvisorAgent:
         Returns (guidance_text, stats).
         """
         messages = [
-            {"role": "system", "content": ADVISOR_SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             *conversation,
             {
                 "role": "user",
@@ -81,12 +93,13 @@ class AdvisorAgent:
         ]
 
         t0 = time.perf_counter()
-        response = self.client.chat.completions.create(
+        response = chat_completions_create(
+            self.client,
             model=self.model,
             messages=messages,
             temperature=self.temperature,
             seed=self.seed,
-            max_completion_tokens=400,
+            max_completion_tokens=self.max_completion_tokens,
         )
         latency = time.perf_counter() - t0
 
@@ -99,6 +112,26 @@ class AdvisorAgent:
             latency_s=latency,
         )
         return text, stats
+
+    def advise_as_model(
+        self,
+        model: str,
+        conversation: list[dict],
+        *,
+        system_prompt: str | None = None,
+        max_completion_tokens: int | None = None,
+    ) -> tuple[str, AdvisorCallStats]:
+        """Same as advise but using another model ID (Self-DNA)."""
+        prior = (self.model, self.system_prompt, self.max_completion_tokens)
+        self.model = model
+        if system_prompt is not None:
+            self.system_prompt = system_prompt
+        if max_completion_tokens is not None:
+            self.max_completion_tokens = max_completion_tokens
+        try:
+            return self.advise(conversation)
+        finally:
+            self.model, self.system_prompt, self.max_completion_tokens = prior
 
     @staticmethod
     def integrate_advice(
@@ -148,7 +181,8 @@ class AdvisorAgent:
         ]
 
         t0 = time.perf_counter()
-        response = self.client.chat.completions.create(
+        response = chat_completions_create(
+            self.client,
             model=self.model,
             messages=messages,
             temperature=self.temperature,

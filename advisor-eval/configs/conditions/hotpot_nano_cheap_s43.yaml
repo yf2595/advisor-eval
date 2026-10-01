@@ -1,0 +1,6 @@
+condition_id: hotpot_nano_cheap_s43
+benchmark: hotpot
+executor: gpt-5.4-nano
+advisor: gpt-5.4
+method: cheap
+seed: 43

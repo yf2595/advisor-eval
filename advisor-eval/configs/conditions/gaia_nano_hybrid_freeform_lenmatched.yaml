@@ -1,0 +1,11 @@
+condition_id: gaia_nano_hybrid_freeform_lenmatched
+benchmark: gaia
+executor: gpt-5.4-nano
+advisor: gpt-5.4
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: freeform_lenmatched
+speaker: advisor
+seed: 42
+loop_guards: false

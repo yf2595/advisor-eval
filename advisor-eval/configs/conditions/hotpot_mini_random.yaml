@@ -1,0 +1,11 @@
+condition_id: hotpot_mini_random
+benchmark: hotpot
+executor: gpt-4.1-mini
+advisor: gpt-5.4
+method: advisor
+policy: random
+tau: 0.75
+message_format: dna_compact
+speaker: advisor
+seed: 42
+loop_guards: false

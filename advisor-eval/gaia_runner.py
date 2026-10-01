@@ -9,7 +9,9 @@ import io
 import json
 import math
 import mimetypes
+import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -22,9 +24,12 @@ from pathlib import Path
 from typing import Any
 
 from huggingface_hub import hf_hub_download
-from openai import OpenAI
+from experiment import trace
+from experiment.openai_chat import chat_completions_create
+from experiment.openai_client import make_openai_client
 
 from advisor import AdvisorAgent
+from experiment.hooks import ExperimentHooks, parse_dna_fields
 from policies import EscalationPolicy
 
 GAIA_SYSTEM_PROMPT = """\
@@ -349,7 +354,8 @@ def _reformat_final_answer(
     )
     t0 = time.perf_counter()
     try:
-        resp = client.chat.completions.create(
+        resp = chat_completions_create(
+            client,
             model=model,
             messages=[
                 {"role": "system", "content": system},
@@ -423,6 +429,9 @@ _FALLBACK_UA = (
 
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 
+_HOST_COOLDOWN_S = float(os.environ.get("HTTP_HOST_COOLDOWN_S", "600"))
+_HOST_DOWN_UNTIL: dict[str, float] = {}
+
 
 def _http_request_raw(url: str, timeout: int) -> tuple[bytes, str]:
     """GET a URL with retries, UA rotation, and arxiv mirror fallback.
@@ -449,29 +458,77 @@ def _http_request_raw(url: str, timeout: int) -> tuple[bytes, str]:
 
     last_exc: Exception | None = None
     for attempt_idx, (attempt_url, headers) in enumerate(attempts):
+        host = urllib.parse.urlparse(attempt_url).netloc.lower()
+        down_until = _HOST_DOWN_UNTIL.get(host, 0.0)
+        if down_until > time.time():
+            last_exc = urllib.error.URLError(
+                f"host {host} skipped: timed out within the last {_HOST_COOLDOWN_S:.0f}s"
+            )
+            trace.event("http_skip", f"{host} (circuit open) {trace.preview(attempt_url, 120)}",
+                        url=attempt_url, host=host)
+            continue
         for retry_idx in range(2):
+            trace.event(
+                "http_request",
+                f"GET {trace.preview(attempt_url, 140)} (variant {attempt_idx}, try {retry_idx}, timeout {timeout}s)",
+                url=attempt_url, variant=attempt_idx, retry=retry_idx, timeout_s=timeout,
+                user_agent=headers.get("User-Agent", "")[:60],
+            )
+            t0 = time.perf_counter()
             try:
                 req = urllib.request.Request(attempt_url, headers=headers, method="GET")
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     ctype = resp.headers.get("Content-Type", "") or ""
-                    return resp.read(), ctype.lower()
+                    body = resp.read()
+                    trace.event(
+                        "http_response",
+                        f"{resp.status} {len(body)}B {time.perf_counter() - t0:.1f}s {host}",
+                        url=attempt_url, status=resp.status, bytes=len(body),
+                        content_type=ctype, latency_s=round(time.perf_counter() - t0, 3),
+                    )
+                    return body, ctype.lower()
             except urllib.error.HTTPError as exc:  # noqa: PERF203
                 last_exc = exc
+                trace.event("http_error", f"HTTP {exc.code} {time.perf_counter() - t0:.1f}s {host}",
+                            url=attempt_url, status=exc.code,
+                            latency_s=round(time.perf_counter() - t0, 3), error=str(exc))
                 if exc.code in _RETRY_STATUSES and retry_idx == 0:
                     time.sleep(1.0 + 2.0 * retry_idx)
                     continue
                 break  # move to next attempt variant
-            except urllib.error.URLError as exc:
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last_exc = exc
+                timed_out = _is_timeout(exc)
+                trace.event(
+                    "http_error",
+                    f"{'TIMEOUT' if timed_out else type(exc).__name__} {time.perf_counter() - t0:.1f}s {host}: "
+                    f"{trace.preview(exc, 100)}",
+                    url=attempt_url, timed_out=timed_out,
+                    latency_s=round(time.perf_counter() - t0, 3), error=str(exc),
+                )
+                if timed_out:
+                    _HOST_DOWN_UNTIL[host] = time.time() + _HOST_COOLDOWN_S
+                    break
                 if retry_idx == 0:
                     time.sleep(1.0)
                     continue
                 break
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
+                trace.event("http_error", f"{type(exc).__name__} {host}: {trace.preview(exc, 100)}",
+                            url=attempt_url, error=str(exc))
                 break
     assert last_exc is not None
     raise last_exc
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return True
+    return "timed out" in str(exc).lower()
 
 
 def _http_get(url: str) -> str:
@@ -1187,13 +1244,36 @@ def _parse_next_action_from_guidance(guidance: str) -> tuple[str | None, str | N
     return None, None
 
 
+def _parse_handoff_action(guidance: str) -> dict[str, str] | None:
+    """Parse an action hand-off message into an executable tool-call dict, if valid."""
+    obj = _extract_json(guidance or "")
+    if not obj:
+        return None
+    action = str(obj.get("action", "")).strip().lower()
+    tool_name = str(obj.get("tool_name", "")).strip()
+    if action != "tool" or not tool_name:
+        return None
+    tool_input = obj.get("tool_input", "")
+    if isinstance(tool_input, (dict, list)):
+        tool_input = json.dumps(tool_input)
+    return {
+        "action": "tool",
+        "tool_name": tool_name,
+        "tool_input": str(tool_input).strip(),
+    }
+
+
 def _guidance_is_actionable(
     guidance: str,
     tool_trace: list[dict[str, Any]],
     blocked_hosts: dict[str, int],
 ) -> bool:
-    """Reject weak advisor outputs that repeat known-bad paths."""
-    if not guidance or "NEXT:" not in guidance:
+    """Reject weak advisor outputs that repeat known-bad paths.
+
+    Must not require format-specific markers (e.g. "NEXT:"): message formats
+    such as dna_compact or action_handoff have none and would be discarded.
+    """
+    if not guidance or not guidance.strip():
         return False
     lower = guidance.lower()
     # Reject if guidance asks to revisit hosts already blocked 2+ times.
@@ -1248,9 +1328,11 @@ def run_gaia_agentic(
     max_tool_calls: int,
     max_advisor_calls: int = 2,
     task_metadata: dict[str, Any] | None = None,
+    experiment: ExperimentHooks | None = None,
 ) -> GaiaRunResult:
     """Run an agentic loop with tool usage and optional advisor support."""
-    client = OpenAI()
+    hooks = experiment or ExperimentHooks.legacy()
+    client = make_openai_client()
     result = GaiaRunResult()
     had_error = False
     post_error_recovered = False
@@ -1306,50 +1388,65 @@ def run_gaia_agentic(
     # Cloudflare/403/anti-bot gates and would just burn the budget.
     blocked_hosts: dict[str, int] = {}
     last_error_host: str | None = None
+    # Action hand-off: the advisor's tool call replaces the executor's next
+    # action and does not count against the executor step limit.
+    pending_handoff: str | None = None
+    executor_steps = 0
+    loop_limit = max_steps + (max_advisor_calls if hooks.action_handoff else 0)
 
-    for step_idx in range(max_steps):
+    for step_idx in range(loop_limit):
         step_lat = 0.0
-        t0 = time.perf_counter()
-        try:
-            working_memory_note = _build_working_memory_note(
-                evidence_snippets=evidence_snippets,
-                blocked_query_keys=blocked_query_keys,
-                blocked_hosts=blocked_hosts,
-                candidate_answer=candidate_answer,
-            )
-            response = client.chat.completions.create(
-                model=executor_model,
-                messages=messages + [{"role": "user", "content": working_memory_note}],
-                temperature=temperature,
-                seed=seed,
-                max_completion_tokens=512,
-            )
-        except Exception as exc:  # noqa: BLE001
-            # OpenAI may reject a prompt (e.g. safety filter) or throttle us.
-            # Record the failure and stop the loop gracefully so the matrix
-            # continues to the next task instead of crashing.
+        handoff_text, pending_handoff = pending_handoff, None
+        if handoff_text is None:
+            if executor_steps >= max_steps:
+                break
+            executor_steps += 1
+            t0 = time.perf_counter()
+            try:
+                working_memory_note = _build_working_memory_note(
+                    evidence_snippets=evidence_snippets,
+                    blocked_query_keys=blocked_query_keys,
+                    blocked_hosts=blocked_hosts,
+                    candidate_answer=candidate_answer,
+                )
+                response = chat_completions_create(
+                    client,
+                    model=executor_model,
+                    messages=messages + [{"role": "user", "content": working_memory_note}],
+                    temperature=temperature,
+                    seed=seed,
+                    max_completion_tokens=512,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # The API may reject a prompt (e.g. safety filter) or throttle us.
+                # Record the failure and stop the loop gracefully so the matrix
+                # continues to the next task instead of crashing.
+                latency = time.perf_counter() - t0
+                result.total_exec_latency += latency
+                result.tool_trace.append({
+                    "step": step_idx,
+                    "tool": "executor_api",
+                    "input": "",
+                    "success": False,
+                    "error": f"{type(exc).__name__}: {exc}"[:400],
+                })
+                result.step_latencies.append(latency)
+                result.dead_end_count += 1
+                result.recovery_success = False
+                return result
             latency = time.perf_counter() - t0
+            step_lat += latency
+
+            usage = response.usage
             result.total_exec_latency += latency
-            result.tool_trace.append({
-                "step": step_idx,
-                "tool": "executor_api",
-                "input": "",
-                "success": False,
-                "error": f"{type(exc).__name__}: {exc}"[:400],
-            })
-            result.step_latencies.append(latency)
-            result.dead_end_count += 1
-            result.recovery_success = False
-            return result
-        latency = time.perf_counter() - t0
-        step_lat += latency
+            result.total_exec_prompt += usage.prompt_tokens if usage else 0
+            result.total_exec_completion += usage.completion_tokens if usage else 0
 
-        usage = response.usage
-        result.total_exec_latency += latency
-        result.total_exec_prompt += usage.prompt_tokens if usage else 0
-        result.total_exec_completion += usage.completion_tokens if usage else 0
-
-        raw_text = response.choices[0].message.content or ""
+            raw_text = response.choices[0].message.content or ""
+        else:
+            raw_text = handoff_text
+            trace.event("advisor_handoff", f"step {step_idx} executing advisor action", step=step_idx,
+                        action=raw_text)
         messages.append({"role": "assistant", "content": raw_text})
 
         action = _extract_json(raw_text)
@@ -1451,6 +1548,9 @@ def run_gaia_agentic(
                         success = True
                         output = ""
                         error = ""
+                        trace.event("tool_call", f"step {step_idx} {tool_name}({trace.preview(tool_input, 140)})",
+                                    step=step_idx, tool=tool_name, input=tool_input)
+                        tool_t0 = time.perf_counter()
                         try:
                             if tool_name == "wiki_search":
                                 output = _wiki_search(parsed_tool_input)
@@ -1477,7 +1577,17 @@ def run_gaia_agentic(
                             success = False
                             error = str(exc)
                             output = ""
+                        tool_dt = time.perf_counter() - tool_t0
+                        trace.event(
+                            "tool_result",
+                            f"step {step_idx} {tool_name} {'ok' if success else 'ERROR'} {tool_dt:.1f}s -> "
+                            f"{trace.preview(output if success else error, 160)}",
+                            step=step_idx, tool=tool_name, success=success, latency_s=round(tool_dt, 3),
+                            output=trace.preview(output, 2000), error=error,
+                        )
                     else:
+                        trace.event("tool_blocked", f"step {step_idx} {tool_name} duplicate/blocked query",
+                                    step=step_idx, tool=tool_name, input=tool_input)
                         success = False
                         output = ""
                         error = "duplicate_or_blocked_query"
@@ -1592,6 +1702,7 @@ def run_gaia_agentic(
             ),
             "budget_fraction": budget_fraction,
             "hedged_final": hedged_final,
+            "duplicate_query": duplicate_query,
         }
 
         # Determine advisor trigger (StuckPolicy OR configured policy).
@@ -1629,7 +1740,11 @@ def run_gaia_agentic(
         policy_triggered = advisor is not None and policy.should_escalate(
             step_idx, policy_result, policy_state
         )
-        stuck_triggered = advisor is not None and bool(stuck_triggers)
+        stuck_triggered = (
+            advisor is not None
+            and bool(stuck_triggers)
+            and hooks.loop_guards
+        )
 
         # Hard cap on advisor calls per task.
         advisor_cap_hit = (
@@ -1641,17 +1756,6 @@ def run_gaia_agentic(
         # to act on advisor guidance (unless we're on a hedged final).
         tool_budget_left = max_tool_calls - result.tool_calls
         budget_guard_block = tool_budget_left < 3 and not hedged_final
-
-        # Random_prob suppression in the first 2 steps (no info yet) and
-        # last 3 tool-budget steps (can't act on advice anyway).
-        suppress_random = (
-            policy_name == "random_prob"
-            and (step_idx < 2 or tool_budget_left <= 3)
-            and not stuck_triggered
-            and not hedged_final
-        )
-        if suppress_random:
-            policy_triggered = False
 
         # Keep a hard advisor-call cap. Allow one late-rescue bypass only once.
         if late_rescue and late_rescue_used:
@@ -1665,7 +1769,7 @@ def run_gaia_agentic(
         )
 
         if should_escalate and advisor is not None:
-            if stuck_triggers:
+            if stuck_triggered and not policy_triggered:
                 trigger_name = stuck_triggers[0]
             else:
                 trigger_name = policy_name or "policy"
@@ -1688,8 +1792,30 @@ def run_gaia_agentic(
             advisor_messages = _truncate_messages_for_advisor(messages) + [
                 {"role": "user", "content": context_pack}
             ]
+            trace.event("advisor_call", f"step {step_idx} trigger={trigger_name} speaker={hooks.speaker}",
+                        step=step_idx, trigger=trigger_name, speaker=hooks.speaker)
             try:
-                guidance, adv_stats = advisor.advise(advisor_messages)
+                if hooks.dry_run:
+                    guidance = (
+                        "[DRY RUN] Example advisor message for inspection.\n"
+                        "DIAGNOSIS: (dry run)\nNEXT:\n1. wiki_search with \"example\"\n"
+                        "AVOID:\n- none"
+                    )
+                    from advisor import AdvisorCallStats
+
+                    adv_stats = AdvisorCallStats(prompt_tokens=0, completion_tokens=0, latency_s=0.0)
+                elif hooks.speaker == "executor":
+                    sys_p = hooks.resolve_advisor_system_prompt()
+                    from advisor import ADVISOR_SYSTEM_PROMPT
+
+                    guidance, adv_stats = advisor.advise_as_model(
+                        executor_model,
+                        advisor_messages,
+                        system_prompt=sys_p or ADVISOR_SYSTEM_PROMPT,
+                        max_completion_tokens=hooks.advisor_max_completion_tokens,
+                    )
+                else:
+                    guidance, adv_stats = advisor.advise(advisor_messages)
             except Exception as exc:  # noqa: BLE001
                 result.tool_trace.append({
                     "step": step_idx,
@@ -1700,20 +1826,28 @@ def run_gaia_agentic(
                 })
                 guidance = None
                 adv_stats = None
-            if guidance is not None and adv_stats is not None:
-                if not _guidance_is_actionable(guidance, result.tool_trace, blocked_hosts):
-                    guidance = None
-                    adv_stats = None
-            if guidance is not None and adv_stats is not None:
+            if adv_stats is not None:
                 result.total_adv_latency += adv_stats.latency_s
                 result.total_adv_prompt += adv_stats.prompt_tokens
                 result.total_adv_completion += adv_stats.completion_tokens
+            if guidance is not None and adv_stats is not None:
+                if not _guidance_is_actionable(guidance, result.tool_trace, blocked_hosts):
+                    trace.event("advisor_discarded", f"step {step_idx} guidance rejected", step=step_idx)
+                    guidance = None
+                    adv_stats = None
+            if guidance is not None and adv_stats is not None:
                 result.advisor_calls += 1
                 if late_rescue:
                     late_rescue_used = True
                 if had_error:
                     result.advisor_calls_after_error += 1
-                next_tool_hint, next_input_hint = _parse_next_action_from_guidance(guidance)
+                handoff_action = _parse_handoff_action(guidance) if hooks.action_handoff else None
+                if handoff_action is not None:
+                    next_tool_hint = handoff_action["tool_name"]
+                    next_input_hint = handoff_action["tool_input"]
+                else:
+                    next_tool_hint, next_input_hint = _parse_next_action_from_guidance(guidance)
+                parsed = parse_dna_fields(guidance)
                 result.advisor_guidance.append({
                     "step": step_idx,
                     "after_error": had_error,
@@ -1722,19 +1856,28 @@ def run_gaia_agentic(
                     "next_tool_hint": next_tool_hint,
                     "next_input_hint": next_input_hint,
                     "followed_advice": None,  # filled on next step
+                    "parsed_fields": parsed,
+                    "handoff_executed": handoff_action is not None,
                 })
                 step_lat += adv_stats.latency_s
-                messages = advisor.integrate_advice(
-                    messages,
-                    guidance,
-                    format_hint=(
+                if hooks.action_handoff:
+                    # Only a valid tool call is executed; anything else is dropped.
+                    if handoff_action is not None:
+                        pending_handoff = json.dumps(handoff_action)
+                else:
+                    default_hint = (
                         "Apply this guidance. On your NEXT turn, execute step "
                         "1 of the advisor's NEXT list exactly, unless it is "
                         "clearly impossible. Do NOT repeat any query listed "
                         "in AVOID or any query you already tried. Respond "
                         "with the same JSON schema as before."
-                    ),
-                )
+                    )
+                    format_hint = hooks.integrate_format_hint(default_hint)
+                    messages = advisor.integrate_advice(
+                        messages,
+                        guidance,
+                        format_hint=format_hint,
+                    )
                 # Hedged final should be overridden by new tool calls; clear
                 # the 'done' flag to keep the loop going.
                 if hedged_final:
@@ -1808,7 +1951,8 @@ def run_gaia_agentic(
         })
         t0 = time.perf_counter()
         try:
-            resp = client.chat.completions.create(
+            resp = chat_completions_create(
+                client,
                 model=executor_model,
                 messages=messages,
                 temperature=temperature,

@@ -1,0 +1,11 @@
+condition_id: hotpot_qwen_report_t0.5
+benchmark: hotpot
+executor: qwen3.5-9b
+advisor: qwen3.6-27b
+method: advisor
+policy: report
+tau: 0.5
+message_format: dna_compact
+speaker: advisor
+seed: 42
+loop_guards: false

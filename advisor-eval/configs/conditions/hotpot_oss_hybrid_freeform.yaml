@@ -1,0 +1,11 @@
+condition_id: hotpot_oss_hybrid_freeform
+benchmark: hotpot
+executor: gpt-oss-20b
+advisor: gpt-oss-120b
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: freeform
+speaker: advisor
+seed: 42
+loop_guards: false

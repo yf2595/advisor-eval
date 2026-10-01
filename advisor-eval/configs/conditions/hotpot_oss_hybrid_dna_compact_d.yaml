@@ -1,0 +1,11 @@
+condition_id: hotpot_oss_hybrid_dna_compact_d
+benchmark: hotpot
+executor: gpt-oss-20b
+advisor: gpt-oss-120b
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: dna_compact_d
+speaker: advisor
+seed: 42
+loop_guards: false

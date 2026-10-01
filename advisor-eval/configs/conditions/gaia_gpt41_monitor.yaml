@@ -1,0 +1,11 @@
+condition_id: gaia_gpt41_monitor
+benchmark: gaia
+executor: gpt-4.1
+advisor: gpt-5.4
+method: advisor
+policy: monitor
+tau: 0.75
+message_format: dna_compact
+speaker: advisor
+seed: 42
+loop_guards: false

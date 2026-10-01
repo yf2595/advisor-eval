@@ -1,0 +1,11 @@
+condition_id: gaia_qwen_hybrid_s44
+benchmark: gaia
+executor: qwen3.5-9b
+advisor: qwen3.6-27b
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: dna_compact
+speaker: advisor
+seed: 44
+loop_guards: false

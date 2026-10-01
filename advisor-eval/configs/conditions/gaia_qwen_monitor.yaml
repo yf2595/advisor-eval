@@ -1,0 +1,11 @@
+condition_id: gaia_qwen_monitor
+benchmark: gaia
+executor: qwen3.5-9b
+advisor: qwen3.6-27b
+method: advisor
+policy: monitor
+tau: 0.75
+message_format: dna_compact
+speaker: advisor
+seed: 42
+loop_guards: false

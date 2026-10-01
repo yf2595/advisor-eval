@@ -1,0 +1,11 @@
+condition_id: gaia_oss_hybrid_freeform_lenmatched
+benchmark: gaia
+executor: gpt-oss-20b
+advisor: gpt-oss-120b
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: freeform_lenmatched
+speaker: advisor
+seed: 42
+loop_guards: false

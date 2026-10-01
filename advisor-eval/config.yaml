@@ -1,74 +1,97 @@
+# Shared settings for every condition in configs/conditions/.
+# Executor / advisor models and the seed are set per condition and override `models` / `run.seed`.
 models:
   executor: "gpt-5.4-nano"
   advisor: "gpt-5.4"
 
 run:
-  max_steps: 16
-  temperature: 0.0
+  max_steps: 16             # step limit T
+  temperature: 0.0          # GPT-4.1 models; dropped for GPT-5.x (reasoning models reject it)
   seed: 42
+  reasoning_effort: low     # GPT-5.x models (see experiment/openai_chat.py)
 
 datasets:
-  gsm8k_samples: 200
-  hotpotqa_samples: 300
-  gaia_samples: 165              # full GAIA validation split
-  hotpotqa_fullwiki_samples: 300
+  gaia_samples: 165               # full GAIA validation split (53 L1 / 86 L2 / 26 L3)
+  hotpotqa_fullwiki_samples: 300  # 150 bridge + 150 comparison, stratified, seed 42
 
 gaia:
   dataset_id: "gaia-benchmark/GAIA"
   config_name: "2023_all"
   split: "validation"
   max_tool_calls: 12
-  max_advisor_calls: 2    # hard cap advisor escalations per task
+  max_advisor_calls: 2      # message budget B
   local_file: null
+  task_ids_file: null       # optional JSON {"task_ids": [...]} to restrict the split
 
 hotpotqa_fullwiki:
   split: "validation"
   level: "hard"
-  seed: 42
+  seed: 42                  # task sampling seed (fixed across run seeds)
   stratify: true
   local_file: null
   dataset_id: "hotpot_qa"
   config_name: "fullwiki"
-  write_manifest: true
+  write_manifest: true      # writes data/hotpotqa_fullwiki_manifest_seed42.json
   manifest_dir: null
   max_tool_calls: 12
   max_advisor_calls: 2
   search_limit: 8
-  top_k_pages: 3
+  top_k_pages: 3            # wiki_search returns the opening sections of the top 3 articles
   extract_chars_per_page: 2500
   total_budget_chars: 12000
 
 policies:
-  active: "model_driven"
-  threshold: 0.6          # for self_eval
-  # failure_or_conf_t0.25 / _t0.5 / _t0.75: failure_based OR (confidence < threshold)
-  fixed_interval: 3       # for fixed_interval
-  random_prob: 0.3        # for random_prob
+  random_prob: 0.3          # random initiation (same message budget B)
+
+evaluation:
+  llm_judge: false          # accuracy = normalised exact match; true adds a gpt-4.1-nano equivalence fallback (HotpotQA)
+
+# Open-weight models served locally with vLLM (OpenAI-compatible API).
+# Condition files refer to the keys below; `served_name` is the model name passed to vLLM.
+# Override an endpoint with the environment variable named in `base_url_env`.
+# See scripts/serve_vllm.sh.
+local_models:
+  qwen3.5-9b:
+    served_name: "Qwen/Qwen3.5-9B"
+    base_url: "http://localhost:8001/v1"
+    base_url_env: "QWEN_EXECUTOR_URL"
+    extra_body:
+      chat_template_kwargs: {enable_thinking: false}
+  qwen3.6-27b:
+    served_name: "Qwen/Qwen3.6-27B"
+    base_url: "http://localhost:8002/v1"
+    base_url_env: "QWEN_ADVISOR_URL"
+    extra_body:
+      chat_template_kwargs: {enable_thinking: false}
+  gpt-oss-20b:
+    served_name: "openai/gpt-oss-20b"
+    base_url: "http://localhost:8003/v1"
+    base_url_env: "OSS_EXECUTOR_URL"
+    reasoning_effort: low
+  gpt-oss-120b:
+    served_name: "openai/gpt-oss-120b"
+    base_url: "http://localhost:8004/v1"
+    base_url_env: "OSS_ADVISOR_URL"
+    reasoning_effort: low
 
 costs:
-  # Prices from https://developers.openai.com/api/docs/pricing (per token).
+  # OpenAI list prices per token (USD), September 30, 2026 (paper Table 4).
+  # Locally served models have no entry and are costed at $0 (paper reports GPU-hours).
   gpt-5.4-nano:
     input: 0.00000020     # $0.20 per 1M input tokens
     output: 0.00000125    # $1.25 per 1M output tokens
-  gpt-5.4-mini:
-    input: 0.00000075     # $0.75 per 1M input tokens
-    output: 0.0000045     # $4.50 per 1M output tokens
+  gpt-4.1-mini:
+    input: 0.00000040     # $0.40 per 1M
+    output: 0.00000160    # $1.60 per 1M
+  gpt-4.1:
+    input: 0.00000200     # $2.00 per 1M
+    output: 0.00000800    # $8.00 per 1M
   gpt-5.4:
-    input: 0.0000025      # $2.50 per 1M input tokens
-    output: 0.000015      # $15.00 per 1M output tokens
-  # Legacy entries kept for backwards-compatible analysis of older runs.
-  gpt-4.1-nano:
+    input: 0.0000025      # $2.50 per 1M
+    output: 0.000015      # $15.00 per 1M
+  gpt-4.1-nano:           # optional answer-equivalence judge (evaluation.llm_judge)
     input: 0.0000001
     output: 0.0000004
-  gpt-4.1:
-    input: 0.000002
-    output: 0.000008
-  gpt-4.1-mini:
-    input: 0.0000004
-    output: 0.0000016
-  gpt-5.2:
-    input: 0.00000175
-    output: 0.000014
 
 cache:
   enabled: false

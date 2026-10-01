@@ -1,0 +1,6 @@
+condition_id: gaia_qwen27b_alone
+benchmark: gaia
+executor: qwen3.6-27b
+advisor: qwen3.6-27b
+method: strong
+seed: 42

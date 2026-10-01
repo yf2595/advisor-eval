@@ -1,7 +1,11 @@
 openai
 datasets
+huggingface_hub
 tqdm
-numpy
-pandas
-matplotlib
 pyyaml
+scipy
+tiktoken
+python-dotenv
+openpyxl
+pypdf
+python-docx

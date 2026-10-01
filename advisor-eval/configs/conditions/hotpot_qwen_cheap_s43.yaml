@@ -1,0 +1,6 @@
+condition_id: hotpot_qwen_cheap_s43
+benchmark: hotpot
+executor: qwen3.5-9b
+advisor: qwen3.6-27b
+method: cheap
+seed: 43

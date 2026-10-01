@@ -218,11 +218,27 @@ def load_gaia(
     dataset_id: str = "gaia-benchmark/GAIA",
     dataset_config_name: str | None = None,
     local_file: str | None = None,
+    task_ids_file: str | None = None,
 ) -> list[dict]:
     """Load GAIA split and return normalised task dicts.
 
     Each dict: {"id": str, "question": str, "answer": str, "metadata": dict}
+
+    If ``task_ids_file`` is given (JSON with a "task_ids" list), the full split
+    is loaded and restricted to those IDs, then capped at ``n``.
     """
+    if task_ids_file:
+        spec = json.loads(Path(task_ids_file).read_text(encoding="utf-8"))
+        wanted = set(spec["task_ids"])
+        all_tasks = load_gaia(
+            n=None,
+            split=split,
+            dataset_id=dataset_id,
+            dataset_config_name=dataset_config_name,
+            local_file=local_file,
+        )
+        selected = [t for t in all_tasks if t["id"] in wanted]
+        return selected[: int(n)] if n is not None else selected
     if local_file:
         path = Path(local_file)
         if not path.exists():
@@ -236,11 +252,14 @@ def load_gaia(
                 rows.append(json.loads(line))
         ds = rows
     else:
+        hf_split = split
+        if n is not None:
+            hf_split = f"{split}[:{int(n)}]"
         try:
             if dataset_config_name:
-                ds = load_dataset(dataset_id, dataset_config_name, split=split)
+                ds = load_dataset(dataset_id, dataset_config_name, split=hf_split)
             else:
-                ds = load_dataset(dataset_id, split=split)
+                ds = load_dataset(dataset_id, split=hf_split)
         except DatasetNotFoundError as exc:
             raise RuntimeError(
                 "GAIA dataset is gated on HuggingFace. "
@@ -311,6 +330,7 @@ def load_dataset_by_name(
             dataset_id=config.get("gaia_dataset_id", "gaia-benchmark/GAIA"),
             dataset_config_name=config.get("gaia_config_name"),
             local_file=config.get("gaia_local_file"),
+            task_ids_file=config.get("gaia_task_ids_file"),
         ),
     }
     if name not in loaders:

@@ -1,0 +1,11 @@
+condition_id: hotpot_nano_hybrid_dna_compact_n
+benchmark: hotpot
+executor: gpt-5.4-nano
+advisor: gpt-5.4
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: dna_compact_n
+speaker: advisor
+seed: 42
+loop_guards: false

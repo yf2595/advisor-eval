@@ -1,0 +1,11 @@
+condition_id: gaia_gpt41_hybrid_freeform
+benchmark: gaia
+executor: gpt-4.1
+advisor: gpt-5.4
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: freeform
+speaker: advisor
+seed: 42
+loop_guards: false

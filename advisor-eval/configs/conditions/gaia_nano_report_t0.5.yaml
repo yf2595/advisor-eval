@@ -1,0 +1,11 @@
+condition_id: gaia_nano_report_t0.5
+benchmark: gaia
+executor: gpt-5.4-nano
+advisor: gpt-5.4
+method: advisor
+policy: report
+tau: 0.5
+message_format: dna_compact
+speaker: advisor
+seed: 42
+loop_guards: false

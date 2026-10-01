@@ -1,0 +1,11 @@
+condition_id: hotpot_nano-x-qwen27b_hybrid
+benchmark: hotpot
+executor: gpt-5.4-nano
+advisor: qwen3.6-27b
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: dna_compact
+speaker: advisor
+seed: 42
+loop_guards: false

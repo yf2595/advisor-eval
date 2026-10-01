@@ -1,0 +1,6 @@
+condition_id: gaia_gpt54_alone
+benchmark: gaia
+executor: gpt-5.4
+advisor: gpt-5.4
+method: strong
+seed: 42

@@ -1,0 +1,11 @@
+condition_id: gaia_oss-x-gpt54_hybrid
+benchmark: gaia
+executor: gpt-oss-20b
+advisor: gpt-5.4
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: dna_compact
+speaker: advisor
+seed: 42
+loop_guards: false

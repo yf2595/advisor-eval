@@ -7,9 +7,12 @@ import time
 import urllib.parse
 from typing import Any
 
-from openai import OpenAI
+from experiment import trace
+from experiment.openai_chat import chat_completions_create
+from experiment.openai_client import make_openai_client
 
 from advisor import AdvisorAgent
+from experiment.hooks import ExperimentHooks, parse_dna_fields
 from gaia_runner import (
     GaiaRunResult,
     _as_text,
@@ -21,6 +24,7 @@ from gaia_runner import (
     _infer_answer_requirements,
     _is_hedged_answer,
     _normalise_query_key,
+    _parse_handoff_action,
     _parse_next_action_from_guidance,
     _parse_tool_input,
     _short,
@@ -219,15 +223,17 @@ def run_hotpot_wiki_agentic(
     max_tool_calls: int,
     max_advisor_calls: int = 2,
     retrieve_config: dict[str, Any] | None = None,
+    experiment: ExperimentHooks | None = None,
 ) -> GaiaRunResult:
     """Agentic loop with Wikipedia search+extract only and optional advisor."""
+    hooks = experiment or ExperimentHooks.legacy()
     rcfg = retrieve_config or {}
     search_limit = int(rcfg.get("search_limit", 8))
     top_k_pages = int(rcfg.get("top_k_pages", 3))
     extract_chars_per_page = int(rcfg.get("extract_chars_per_page", 2500))
     total_budget_chars = int(rcfg.get("total_budget_chars", 12000))
 
-    client = OpenAI()
+    client = make_openai_client()
     result = GaiaRunResult()
     had_error = False
     post_error_recovered = False
@@ -248,47 +254,62 @@ def run_hotpot_wiki_agentic(
     late_rescue_used = False
     no_progress_advisor_rounds = 0
     blocked_hosts: dict[str, int] = {}
+    # Action hand-off: the advisor's tool call replaces the executor's next
+    # action and does not count against the executor step limit.
+    pending_handoff: str | None = None
+    executor_steps = 0
+    loop_limit = max_steps + (max_advisor_calls if hooks.action_handoff else 0)
 
-    for step_idx in range(max_steps):
+    for step_idx in range(loop_limit):
         step_lat = 0.0
-        t0 = time.perf_counter()
-        try:
-            working_memory_note = _build_working_memory_note(
-                evidence_snippets=evidence_snippets,
-                blocked_query_keys=blocked_query_keys,
-                blocked_hosts=blocked_hosts,
-                candidate_answer=candidate_answer,
-            ) + HOTPOT_WORKING_MEMORY_SUFFIX
-            response = client.chat.completions.create(
-                model=executor_model,
-                messages=messages + [{"role": "user", "content": working_memory_note}],
-                temperature=temperature,
-                seed=seed,
-                max_completion_tokens=512,
-            )
-        except Exception as exc:  # noqa: BLE001
+        handoff_text, pending_handoff = pending_handoff, None
+        if handoff_text is None:
+            if executor_steps >= max_steps:
+                break
+            executor_steps += 1
+            t0 = time.perf_counter()
+            try:
+                working_memory_note = _build_working_memory_note(
+                    evidence_snippets=evidence_snippets,
+                    blocked_query_keys=blocked_query_keys,
+                    blocked_hosts=blocked_hosts,
+                    candidate_answer=candidate_answer,
+                ) + HOTPOT_WORKING_MEMORY_SUFFIX
+                response = chat_completions_create(
+                    client,
+                    model=executor_model,
+                    messages=messages + [{"role": "user", "content": working_memory_note}],
+                    temperature=temperature,
+                    seed=seed,
+                    max_completion_tokens=512,
+                )
+            except Exception as exc:  # noqa: BLE001
+                latency = time.perf_counter() - t0
+                result.total_exec_latency += latency
+                result.tool_trace.append({
+                    "step": step_idx,
+                    "tool": "executor_api",
+                    "input": "",
+                    "success": False,
+                    "error": f"{type(exc).__name__}: {exc}"[:400],
+                })
+                result.step_latencies.append(latency)
+                result.dead_end_count += 1
+                result.recovery_success = False
+                return result
             latency = time.perf_counter() - t0
+            step_lat += latency
+
+            usage = response.usage
             result.total_exec_latency += latency
-            result.tool_trace.append({
-                "step": step_idx,
-                "tool": "executor_api",
-                "input": "",
-                "success": False,
-                "error": f"{type(exc).__name__}: {exc}"[:400],
-            })
-            result.step_latencies.append(latency)
-            result.dead_end_count += 1
-            result.recovery_success = False
-            return result
-        latency = time.perf_counter() - t0
-        step_lat += latency
+            result.total_exec_prompt += usage.prompt_tokens if usage else 0
+            result.total_exec_completion += usage.completion_tokens if usage else 0
 
-        usage = response.usage
-        result.total_exec_latency += latency
-        result.total_exec_prompt += usage.prompt_tokens if usage else 0
-        result.total_exec_completion += usage.completion_tokens if usage else 0
-
-        raw_text = response.choices[0].message.content or ""
+            raw_text = response.choices[0].message.content or ""
+        else:
+            raw_text = handoff_text
+            trace.event("advisor_handoff", f"step {step_idx} executing advisor action", step=step_idx,
+                        action=raw_text)
         messages.append({"role": "assistant", "content": raw_text})
 
         action = _extract_json(raw_text)
@@ -379,6 +400,9 @@ def run_hotpot_wiki_agentic(
                         success = True
                         output = ""
                         error = ""
+                        trace.event("tool_call", f"step {step_idx} {tool_name}({trace.preview(tool_input, 140)})",
+                                    step=step_idx, tool=tool_name, input=tool_input)
+                        tool_t0 = time.perf_counter()
                         try:
                             if tool_name == "wiki_search":
                                 output = wiki_search_passages(
@@ -396,7 +420,17 @@ def run_hotpot_wiki_agentic(
                             success = False
                             error = str(exc)
                             output = ""
+                        tool_dt = time.perf_counter() - tool_t0
+                        trace.event(
+                            "tool_result",
+                            f"step {step_idx} {tool_name} {'ok' if success else 'ERROR'} {tool_dt:.1f}s -> "
+                            f"{trace.preview(output if success else error, 160)}",
+                            step=step_idx, tool=tool_name, success=success, latency_s=round(tool_dt, 3),
+                            output=trace.preview(output, 2000), error=error,
+                        )
                     else:
+                        trace.event("tool_blocked", f"step {step_idx} {tool_name} duplicate/blocked query",
+                                    step=step_idx, tool=tool_name, input=tool_input)
                         success = False
                         output = ""
                         error = "duplicate_or_blocked_query"
@@ -496,6 +530,7 @@ def run_hotpot_wiki_agentic(
             ),
             "budget_fraction": budget_fraction,
             "hedged_final": hedged_final,
+            "duplicate_query": duplicate_query,
         }
 
         stuck_triggers: list[str] = []
@@ -521,7 +556,11 @@ def run_hotpot_wiki_agentic(
         policy_triggered = advisor is not None and policy.should_escalate(
             step_idx, policy_result, policy_state
         )
-        stuck_triggered = advisor is not None and bool(stuck_triggers)
+        stuck_triggered = (
+            advisor is not None
+            and bool(stuck_triggers)
+            and hooks.loop_guards
+        )
 
         advisor_cap_hit = (
             max_advisor_calls is not None
@@ -530,15 +569,6 @@ def run_hotpot_wiki_agentic(
         late_rescue = done and (hedged_final or len(evidence_snippets) < 2)
         tool_budget_left = max_tool_calls - result.tool_calls
         budget_guard_block = tool_budget_left < 3 and not hedged_final
-
-        suppress_random = (
-            policy_name == "random_prob"
-            and (step_idx < 2 or tool_budget_left <= 3)
-            and not stuck_triggered
-            and not hedged_final
-        )
-        if suppress_random:
-            policy_triggered = False
 
         if late_rescue and late_rescue_used:
             late_rescue = False
@@ -551,7 +581,7 @@ def run_hotpot_wiki_agentic(
         )
 
         if should_escalate and advisor is not None:
-            if stuck_triggers:
+            if stuck_triggered and not policy_triggered:
                 trigger_name = stuck_triggers[0]
             else:
                 trigger_name = policy_name or "policy"
@@ -572,8 +602,28 @@ def run_hotpot_wiki_agentic(
             advisor_messages = _truncate_messages_for_advisor(messages) + [
                 {"role": "user", "content": context_pack}
             ]
+            trace.event("advisor_call", f"step {step_idx} trigger={trigger_name} speaker={hooks.speaker}",
+                        step=step_idx, trigger=trigger_name, speaker=hooks.speaker)
             try:
-                guidance, adv_stats = advisor.advise(advisor_messages)
+                if hooks.dry_run:
+                    guidance = (
+                        "[DRY RUN] DIAGNOSIS: dry\nNEXT:\n1. wiki_search \"example\"\nAVOID:\n- none"
+                    )
+                    from advisor import AdvisorCallStats
+
+                    adv_stats = AdvisorCallStats()
+                elif hooks.speaker == "executor":
+                    sys_p = hooks.resolve_advisor_system_prompt()
+                    from advisor import ADVISOR_SYSTEM_PROMPT
+
+                    guidance, adv_stats = advisor.advise_as_model(
+                        executor_model,
+                        advisor_messages,
+                        system_prompt=sys_p or ADVISOR_SYSTEM_PROMPT,
+                        max_completion_tokens=hooks.advisor_max_completion_tokens,
+                    )
+                else:
+                    guidance, adv_stats = advisor.advise(advisor_messages)
             except Exception as exc:  # noqa: BLE001
                 result.tool_trace.append({
                     "step": step_idx,
@@ -584,20 +634,28 @@ def run_hotpot_wiki_agentic(
                 })
                 guidance = None
                 adv_stats = None
-            if guidance is not None and adv_stats is not None:
-                if not _guidance_is_actionable(guidance, result.tool_trace, blocked_hosts):
-                    guidance = None
-                    adv_stats = None
-            if guidance is not None and adv_stats is not None:
+            if adv_stats is not None:
                 result.total_adv_latency += adv_stats.latency_s
                 result.total_adv_prompt += adv_stats.prompt_tokens
                 result.total_adv_completion += adv_stats.completion_tokens
+            if guidance is not None and adv_stats is not None:
+                if not _guidance_is_actionable(guidance, result.tool_trace, blocked_hosts):
+                    trace.event("advisor_discarded", f"step {step_idx} guidance rejected", step=step_idx)
+                    guidance = None
+                    adv_stats = None
+            if guidance is not None and adv_stats is not None:
                 result.advisor_calls += 1
                 if late_rescue:
                     late_rescue_used = True
                 if had_error:
                     result.advisor_calls_after_error += 1
-                next_tool_hint, next_input_hint = _parse_next_action_from_guidance(guidance)
+                handoff_action = _parse_handoff_action(guidance) if hooks.action_handoff else None
+                if handoff_action is not None:
+                    next_tool_hint = handoff_action["tool_name"]
+                    next_input_hint = handoff_action["tool_input"]
+                else:
+                    next_tool_hint, next_input_hint = _parse_next_action_from_guidance(guidance)
+                parsed = parse_dna_fields(guidance)
                 result.advisor_guidance.append({
                     "step": step_idx,
                     "after_error": had_error,
@@ -606,19 +664,28 @@ def run_hotpot_wiki_agentic(
                     "next_tool_hint": next_tool_hint,
                     "next_input_hint": next_input_hint,
                     "followed_advice": None,
+                    "parsed_fields": parsed,
+                    "handoff_executed": handoff_action is not None,
                 })
                 step_lat += adv_stats.latency_s
-                messages = advisor.integrate_advice(
-                    messages,
-                    guidance,
-                    format_hint=(
+                if hooks.action_handoff:
+                    # Only a valid tool call is executed; anything else is dropped.
+                    if handoff_action is not None:
+                        pending_handoff = json.dumps(handoff_action)
+                else:
+                    default_hint = (
                         "Apply this guidance. On your NEXT turn, execute step "
                         "1 of the advisor's NEXT list exactly, unless it is "
                         "clearly impossible. Do NOT repeat any query listed "
                         "in AVOID or any query you already tried. Respond "
                         "with the same JSON schema as before."
-                    ),
-                )
+                    )
+                    format_hint = hooks.integrate_format_hint(default_hint)
+                    messages = advisor.integrate_advice(
+                        messages,
+                        guidance,
+                        format_hint=format_hint,
+                    )
                 if hedged_final:
                     done = False
                 cooldown_until = step_idx + 2
@@ -687,7 +754,8 @@ def run_hotpot_wiki_agentic(
         })
         t0 = time.perf_counter()
         try:
-            resp = client.chat.completions.create(
+            resp = chat_completions_create(
+                client,
                 model=executor_model,
                 messages=messages,
                 temperature=temperature,

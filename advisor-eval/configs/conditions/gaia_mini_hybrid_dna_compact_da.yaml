@@ -1,0 +1,11 @@
+condition_id: gaia_mini_hybrid_dna_compact_da
+benchmark: gaia
+executor: gpt-4.1-mini
+advisor: gpt-5.4
+method: advisor
+policy: hybrid
+tau: 0.75
+message_format: dna_compact_da
+speaker: advisor
+seed: 42
+loop_guards: false

@@ -14,6 +14,8 @@ from openai import OpenAI
 
 from executor import ExecutorAgent, CallStats
 from advisor import AdvisorAgent, AdvisorCallStats
+from experiment.hooks import ExperimentHooks
+from experiment.models import configure_models
 from gaia_runner import run_gaia_agentic
 from hotpotqa_runner import run_hotpot_wiki_agentic
 from policies import EscalationPolicy
@@ -41,6 +43,12 @@ _HOTPOT_JUDGE_PROMPT = (
     "PREDICTED: {prediction}"
 )
 _judge_client: OpenAI | None = None
+_use_llm_judge = False
+
+
+def set_llm_judge(enabled: bool) -> None:
+    global _use_llm_judge
+    _use_llm_judge = bool(enabled)
 
 
 def _get_judge_client() -> OpenAI:
@@ -126,7 +134,7 @@ def _semantic_equivalence_judge(
 
 
 def check_correct(prediction: str | None, ground_truth: str, dataset: str) -> bool:
-    """Match prediction to gold: GAIA-style normalization, Hotpot layered EM+judge, else LLM judge."""
+    """Normalised exact match (GAIA / HotpotQA); optional LLM-judge fallback (evaluation.llm_judge)."""
     if prediction is None:
         return False
 
@@ -138,10 +146,14 @@ def check_correct(prediction: str | None, ground_truth: str, dataset: str) -> bo
     if dataset == "hotpotqa_fullwiki":
         if _hotpot_deterministic_match(prediction, ground_truth):
             return True
+        if not _use_llm_judge:
+            return False
         return _semantic_equivalence_judge(
             prediction, ground_truth, dataset=dataset
         )
 
+    if not _use_llm_judge:
+        return _normalize_hotpot_em(str(prediction)) == _normalize_hotpot_em(str(ground_truth))
     return _semantic_equivalence_judge(prediction, ground_truth, dataset=dataset)
 
 
@@ -333,17 +345,16 @@ class Evaluator:
     def __init__(self, config: dict[str, Any], cache: DiskCache | None = None):
         models = config["models"]
         run_cfg = config["run"]
+        configure_models(config)
+        set_llm_judge(config.get("evaluation", {}).get("llm_judge", False))
 
         self.executor = ExecutorAgent(
             model=models["executor"],
             temperature=run_cfg["temperature"],
             seed=run_cfg["seed"],
         )
-        self.advisor = AdvisorAgent(
-            model=models["advisor"],
-            temperature=run_cfg["temperature"],
-            seed=run_cfg["seed"],
-        )
+        self.experiment: ExperimentHooks | None = None
+        self.advisor = self._build_advisor_agent(models["advisor"], run_cfg)
         self.max_steps = run_cfg["max_steps"]
         self.cost_tracker = CostTracker(rates=config["costs"])
         self.executor_model = models["executor"]
@@ -361,6 +372,30 @@ class Evaluator:
             for k in ("search_limit", "top_k_pages", "extract_chars_per_page", "total_budget_chars")
             if k in hp_cfg
         }
+
+    def _build_advisor_agent(self, advisor_model: str, run_cfg: dict[str, Any]) -> AdvisorAgent:
+        hooks = self.experiment or ExperimentHooks.legacy()
+        sys_p = hooks.resolve_advisor_system_prompt()
+        return AdvisorAgent(
+            model=advisor_model,
+            temperature=run_cfg["temperature"],
+            seed=run_cfg["seed"],
+            system_prompt=sys_p,
+            max_completion_tokens=hooks.advisor_max_completion_tokens,
+        )
+
+    def _advice_model(self) -> str:
+        """Model that produced the advice tokens (the executor itself in self-advice runs)."""
+        if self.experiment is not None and self.experiment.speaker == "executor":
+            return self.executor_model
+        return self.advisor_model
+
+    def set_experiment(self, hooks: ExperimentHooks | None) -> None:
+        self.experiment = hooks
+        self.advisor = self._build_advisor_agent(
+            self.advisor_model,
+            {"temperature": self.temperature, "seed": self.seed},
+        )
 
     def _build_run_metadata(
         self,
@@ -717,6 +752,7 @@ class Evaluator:
             max_tool_calls=self.gaia_max_tool_calls,
             max_advisor_calls=self.gaia_max_advisor_calls,
             task_metadata=task.get("metadata", {}),
+            experiment=self.experiment,
         )
 
         cost_exec = self.cost_tracker.compute(
@@ -725,7 +761,7 @@ class Evaluator:
             run.total_exec_completion,
         )
         cost_adv = self.cost_tracker.compute(
-            self.advisor_model,
+            self._advice_model(),
             run.total_adv_prompt,
             run.total_adv_completion,
         )
@@ -848,6 +884,7 @@ class Evaluator:
             max_tool_calls=self.hotpot_max_tool_calls,
             max_advisor_calls=self.hotpot_max_advisor_calls,
             retrieve_config=self.hotpot_retrieve_config or None,
+            experiment=self.experiment,
         )
 
         cost_exec = self.cost_tracker.compute(
@@ -856,7 +893,7 @@ class Evaluator:
             run.total_exec_completion,
         )
         cost_adv = self.cost_tracker.compute(
-            self.advisor_model,
+            self._advice_model(),
             run.total_adv_prompt,
             run.total_adv_completion,
         )

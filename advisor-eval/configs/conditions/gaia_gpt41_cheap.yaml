@@ -1,0 +1,6 @@
+condition_id: gaia_gpt41_cheap
+benchmark: gaia
+executor: gpt-4.1
+advisor: gpt-5.4
+method: cheap
+seed: 42

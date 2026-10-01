@@ -1,0 +1,6 @@
+condition_id: hotpot_qwen27b_alone
+benchmark: hotpot
+executor: qwen3.6-27b
+advisor: qwen3.6-27b
+method: strong
+seed: 42

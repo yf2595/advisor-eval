@@ -1,0 +1,6 @@
+condition_id: gaia_oss120b_alone
+benchmark: gaia
+executor: gpt-oss-120b
+advisor: gpt-oss-120b
+method: strong
+seed: 42

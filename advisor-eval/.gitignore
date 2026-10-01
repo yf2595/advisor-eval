@@ -17,15 +17,13 @@ Thumbs.db
 .idea/
 *.swp
 
-# Local cache for OpenAI responses
+# Local cache for API responses
 .cache/
 
 # Run-time logs
 *.log
 
-# Generated artifacts (rebuild with `python run.py --analyze results/`)
-plots/
-
 # Local secrets / API keys
 .env
 .env.*
+!.env.example

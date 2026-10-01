@@ -1,0 +1,6 @@
+condition_id: hotpot_gpt54_alone
+benchmark: hotpot
+executor: gpt-5.4
+advisor: gpt-5.4
+method: strong
+seed: 42

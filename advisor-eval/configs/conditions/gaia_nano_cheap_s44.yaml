@@ -1,0 +1,6 @@
+condition_id: gaia_nano_cheap_s44
+benchmark: gaia
+executor: gpt-5.4-nano
+advisor: gpt-5.4
+method: cheap
+seed: 44

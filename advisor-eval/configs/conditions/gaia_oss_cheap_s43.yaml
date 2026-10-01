@@ -1,0 +1,6 @@
+condition_id: gaia_oss_cheap_s43
+benchmark: gaia
+executor: gpt-oss-20b
+advisor: gpt-oss-120b
+method: cheap
+seed: 43

@@ -4,7 +4,8 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from openai import OpenAI
+from experiment.openai_chat import chat_completions_create
+from experiment.openai_client import make_openai_client
 
 EXECUTOR_SYSTEM_PROMPT = """\
 You are a precise problem-solving agent. Solve the given task step by step.
@@ -50,7 +51,7 @@ class StepResult:
 
 class ExecutorAgent:
     def __init__(self, model: str, temperature: float = 0.0, seed: int = 42):
-        self.client = OpenAI()
+        self.client = make_openai_client()
         self.model = model
         self.temperature = temperature
         self.seed = seed
@@ -58,7 +59,8 @@ class ExecutorAgent:
     def step(self, messages: list[dict]) -> StepResult:
         """Run one executor step. Returns StepResult with latency and token counts."""
         t0 = time.perf_counter()
-        response = self.client.chat.completions.create(
+        response = chat_completions_create(
+            self.client,
             model=self.model,
             messages=messages,
             temperature=self.temperature,
@@ -93,7 +95,8 @@ class ExecutorAgent:
         """Ask the executor to rate its own confidence. Returns (score, stats)."""
         prompt = CONFIDENCE_PROMPT.format(question=question, answer=answer)
         t0 = time.perf_counter()
-        response = self.client.chat.completions.create(
+        response = chat_completions_create(
+            self.client,
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
