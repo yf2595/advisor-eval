@@ -1,7 +1,7 @@
 # When to Ask, What to Say, and When Listening Hurts: Communication Between Asymmetric LLM Agents
 
 Code, prompts, configurations, and trajectory logs for the anonymous NAACL 2027
-submission. Anonymous repository: <https://anonymous.4open.science/r/advisor-eval>
+submission. Anonymous repository: <https://anonymous.4open.science/r/advisor-eval-0A48>
 
 A small **executor** model solves an agentic task with tools. It can consult a
 stronger **advisor** that is only allowed to *advise*: the advisor never calls
@@ -483,3 +483,10 @@ runs/                       per-condition trajectory logs
   extra stuck-detection triggers into any policy (for example a hedged final
   answer or a nearly exhausted tool budget). It is **off** in every paper
   configuration.
+
+## License
+
+Code is released under the MIT License (see `LICENSE`). HotpotQA is
+released under CC BY-SA 4.0. GAIA is gated and distributed under the
+terms of its Hugging Face dataset card; it is not redistributed here.
+Model outputs are subject to the terms of the models that produced them.
