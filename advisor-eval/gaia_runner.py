@@ -46,11 +46,11 @@ At each turn, output ONLY a valid JSON object with this schema:
 }
 
 Tool usage guide:
-- wiki_search: tool_input = plain search string (e.g. "Mercedes Sosa discography").
+- wiki_search: tool_input = plain search string (e.g. "Miles Davis discography").
 - wiki_lookup: tool_input = exact Wikipedia page title.
 - web_search: tool_input = plain web search query string.
 - web_fetch_url: tool_input = an https URL. Works for HTML, PDF, XLSX, CSV and plain text (content is auto-extracted).
-- arxiv_search: tool_input = plain query OR arXiv fielded query (e.g. "cat:physics.soc-ph AND submittedDate:2016-08-11").
+- arxiv_search: tool_input = plain query OR arXiv fielded query (e.g. "cat:cs.CL AND submittedDate:2019-03-05").
 - arxiv_fetch: tool_input = arXiv id like "2401.12345".
 - github_issue_fetch: use when a question mentions a specific GitHub issue/PR or needs repo metadata. tool_input = JSON {"repo":"owner/repo","issue_number":123} or the string "owner/repo#123".
 - read_attachment: call ONLY when the task metadata lists an attachment_file_name. tool_input can be empty to read the default attachment, or JSON {"file_name":"...","sheet":"Sheet1","max_rows":200,"member":"inner.txt"}.
@@ -73,7 +73,7 @@ Set request_advisor=true if ANY of these holds; otherwise keep it false:
 - you are about to emit a final answer with only one source or with hedging.
 
 Final-answer format rubric (follow the question literally):
-- If it asks for a number with no units, output digits only (e.g. "41", "0.1777"); obey any requested rounding or units like "thousand hours".
+- If it asks for a number with no units, output digits only (e.g. "12", "0.4375"); obey any requested rounding or units like "thousand meters".
 - If it asks for a comma-separated list, output "a, b, c" with a space after each comma and follow the requested ordering.
 - If it asks for a name, output only the name with no title/honorific.
 - If it asks for an exact phrase as it appears in a document, output only that phrase with no scene directive (no "INT.", "EXT.", or trailing "- DAY/NIGHT").
@@ -336,7 +336,7 @@ def _reformat_final_answer(
         "- Do not add explanations, prefixes, quotes, or trailing punctuation.\n"
         "- For numbers: output digits only (and decimal point). Apply any "
         "rounding or unit conversion the question requests (e.g. 'in thousand "
-        "hours' means divide by 1000 and round appropriately). Drop units "
+        "meters' means divide by 1000 and round appropriately). Drop units "
         "unless the question asks for them.\n"
         "- For comma-separated lists: output 'a, b, c' with a space after "
         "each comma; preserve the requested ordering.\n"
@@ -910,7 +910,7 @@ def _arxiv_search(parsed: Any) -> str:
         raise ValueError("arxiv_search requires a query string.")
     # Accept both plain-text and fielded arXiv queries.
     # Example fielded query:
-    #   cat:physics.soc-ph AND submittedDate:[201608110000 TO 201608120000]
+    #   cat:cs.CL AND submittedDate:[201903050000 TO 201903060000]
     fielded_tokens = ("cat:", "ti:", "abs:", "au:", "submittedDate:", "id:")
     if any(tok in query for tok in fielded_tokens):
         search_query = query

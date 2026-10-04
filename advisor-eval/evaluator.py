@@ -200,7 +200,7 @@ def _stem(token: str) -> str:
     """Very lightweight English stemmer used only for GAIA answer equivalence.
 
     Folds common endings that the strong model tends to emit when the gold
-    answer is a root form (e.g. "Egalitarianism" vs "egalitarian",
+    answer is a root form (e.g. "Realism" vs "real",
     "networks" vs "network").
     """
     t = token.lower().strip(" .,;:\"'")
@@ -220,7 +220,7 @@ _MULTIPLIER_WORDS = {
 def _maybe_multiplied_number(pred: str, truth: str) -> bool:
     """Return True when the prediction is the truth times a magnitude word.
 
-    Example: gold="17", pred="17000" (which is 17 * 1000) with a "thousand"
+    Example: gold="23", pred="23000" (which is 23 * 1000) with a "thousand"
     qualifier somewhere nearby. We deliberately keep this tight to avoid
     false positives: both sides must be pure integers.
     """
@@ -284,20 +284,20 @@ def _canonicalise_gaia_prediction(prediction: str, ground_truth: str) -> str:
         if pred_norm == truth_norm:
             return truth
 
-    # Scene directive stripping (e.g. "INT. THE CASTLE - DAY" -> "THE CASTLE").
+    # Scene directive stripping (e.g. "INT. THE KITCHEN - DAY" -> "THE KITCHEN").
     stripped_scene = _strip_scene_directives(pred)
     if stripped_scene and stripped_scene.lower() == truth_l:
         return truth
 
-    # Trailing unit stripping (e.g. "0.156 m^3" -> "0.156"; only when gold has
+    # Trailing unit stripping (e.g. "2.5 kg" -> "2.5"; only when gold has
     # no trailing unit of its own).
     if not _TRAILING_UNIT_RE.search(truth):
         stripped_unit = _strip_trailing_unit(pred)
         if stripped_unit and stripped_unit.lower() == truth_l:
             return truth
 
-    # Stem-based equivalence for single-word answers (e.g. "Egalitarianism"
-    # -> "egalitarian"). Only applied when both sides are a single token.
+    # Stem-based equivalence for single-word answers (e.g. "Realism"
+    # -> "real"). Only applied when both sides are a single token.
     if " " not in truth_l and re.fullmatch(r"[a-zA-Z]+", truth_l):
         # Try the whole prediction first, then each token in it.
         candidates = [pred_l] + re.findall(r"[a-zA-Z]+", pred_l)
@@ -306,7 +306,7 @@ def _canonicalise_gaia_prediction(prediction: str, ground_truth: str) -> str:
             if _stem(cand) == truth_stem and truth_stem:
                 return truth
 
-    # Number-multiplier fold: gold "17" <-> pred "17000" when a "thousand"
+    # Number-multiplier fold: gold "23" <-> pred "23000" when a "thousand"
     # qualifier is implied by the question (we don't have the question here;
     # accept any exact K/M/B multiple as evidence the model forgot to divide).
     if _maybe_multiplied_number(pred, truth):

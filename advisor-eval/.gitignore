@@ -27,3 +27,18 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# GAIA content must not be redistributed (dataset terms): questions, answers,
+# attachments, task id lists, and any per-task logs or results.
+runs/*gaia*/
+results/gaia_*
+results/*gaia*.jsonl
+data/gaia*
+data/task_ids_gaia.json
+data/2023/
+**/metadata.jsonl
+**/gaia-benchmark*/
+**/datasets--gaia-benchmark--GAIA/
+huggingface/
+hf_cache/
+.hf_cache/

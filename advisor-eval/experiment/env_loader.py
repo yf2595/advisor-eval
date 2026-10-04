@@ -14,7 +14,7 @@ def load_dotenv_if_present() -> None:
     load_dotenv(root / ".env", override=True)
     import os
 
-    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MAX_TOTAL_USD"):
+    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MAX_TOTAL_USD", "HF_TOKEN"):
         v = os.environ.get(var)
         if v is not None:
             os.environ[var] = v.strip()

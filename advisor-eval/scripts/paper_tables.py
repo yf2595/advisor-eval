@@ -8,6 +8,9 @@ McNemar p-value, message counts, tokens per message, cost, latency, tool
 errors, recovery efficiency, and the GAIA easy / hard split.
 
 Output: results/paper_tables/<table>.csv (missing runs are listed and skipped).
+
+GAIA runs are not distributed with the repository (dataset terms), so GAIA
+rows appear only after running the GAIA conditions locally; see the README.
 """
 
 from __future__ import annotations
@@ -165,6 +168,12 @@ def main() -> None:
         print(f"{table}: {len(rows)}/{len(ids)} conditions -> {path.relative_to(ROOT)}")
     if missing:
         print(f"\n{len(missing)} conditions have no run yet, e.g. {sorted(missing)[:5]}")
+        n_gaia = sum(1 for cid in missing if specs[cid].benchmark == "gaia")
+        if n_gaia:
+            print(
+                f"{n_gaia} of them are GAIA conditions. GAIA runs are not redistributed; "
+                "run them locally with your own Hugging Face access (see README, 'GAIA data')."
+            )
 
 
 if __name__ == "__main__":

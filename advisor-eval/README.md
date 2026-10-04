@@ -1,7 +1,11 @@
 # When to Ask, What to Say, and When Listening Hurts: Communication Between Asymmetric LLM Agents
 
-Code, prompts, configurations, and trajectory logs for the anonymous NAACL 2027
-submission. Anonymous repository: <https://anonymous.4open.science/r/advisor-eval-0A48>
+Code, prompts, configurations, and HotpotQA trajectory logs for the anonymous
+NAACL 2027 submission. Anonymous repository: <https://anonymous.4open.science/r/advisor-eval-0A48>
+
+GAIA data and GAIA trajectories are **not** included, because the dataset's
+terms ask users not to reshare its questions, files, or answers. The code runs
+GAIA from Hugging Face with your own access; see [GAIA data](#gaia-data).
 
 A small **executor** model solves an agentic task with tools. It can consult a
 stronger **advisor** that is only allowed to *advise*: the advisor never calls
@@ -158,8 +162,8 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 2. credentials
-cp .env.example .env              # add OPENAI_API_KEY
-huggingface-cli login             # after requesting access to gaia-benchmark/GAIA
+cp .env.example .env              # add OPENAI_API_KEY (and HF_TOKEN for GAIA)
+huggingface-cli login             # or HF_TOKEN; after accepting the GAIA terms on Hugging Face
 
 # 3. check the setup (no model calls)
 python scripts/run_experiment_plan.py --all --dry-run
@@ -178,7 +182,7 @@ The rest of this section explains each step.
 | Needed for | Requirement |
 |---|---|
 | Everything | Linux or macOS (Windows works for the API group; vLLM needs Linux), Python ≥ 3.10, internet access. GAIA tools use web search, page fetch, and Wikipedia; HotpotQA uses the Wikipedia API. |
-| GAIA | A Hugging Face account with access to the gated dataset [`gaia-benchmark/GAIA`](https://huggingface.co/datasets/gaia-benchmark/GAIA) |
+| GAIA | A Hugging Face account with access to the gated dataset [`gaia-benchmark/GAIA`](https://huggingface.co/datasets/gaia-benchmark/GAIA) and a token (`HF_TOKEN`); see [GAIA data](#gaia-data) |
 | HotpotQA | Nothing: `hotpot_qa` / `fullwiki` is public and downloads automatically |
 | API group and cross-family group | An OpenAI API key with access to `gpt-5.4`, `gpt-5.4-nano`, `gpt-4.1`, and `gpt-4.1-mini` |
 | Local group and cross-family group | NVIDIA GPUs with [vLLM](https://github.com/vllm-project/vllm). The paper used RTX 6000 Ada (48 GB): one GPU each for Qwen3.5-9B and gpt-oss-20b, and two each (tensor parallel) for Qwen3.6-27B and gpt-oss-120b. |
@@ -186,7 +190,7 @@ The rest of this section explains each step.
 ### Step 1: install
 
 ```bash
-git clone https://anonymous.4open.science/r/advisor-eval   # or download and unzip the archive
+git clone https://anonymous.4open.science/r/advisor-eval-0A48   # or download and unzip the archive
 cd advisor-eval
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
@@ -213,9 +217,12 @@ Then edit `.env`:
 - `MAX_TOTAL_USD=150`: each run session stops before its OpenAI spend would
   exceed this cap. Raise it for a full run.
 
+- `HF_TOKEN=hf_...`: a Hugging Face read token, needed for GAIA only.
+
 `.env` is gitignored. Never commit it.
 
-For GAIA, request access on the dataset page, then log in once:
+For GAIA, request access on the dataset page and create a token (see
+[GAIA data](#gaia-data)). Either put it in `.env` as `HF_TOKEN`, or log in once:
 
 ```bash
 huggingface-cli login
@@ -335,8 +342,10 @@ This writes one CSV per paper table, with one row per condition:
 - latency, tool errors, and recovery efficiency (accuracy points gained per
   advisor message).
 
-The script also lists any condition in a table that has no run yet. To compare
-any two runs task by task:
+The script also lists any condition in a table that has no run yet. The
+repository ships no GAIA runs, so GAIA rows appear only after you run the GAIA
+conditions locally (Step 5); without them the script still runs and writes the
+HotpotQA rows that have runs. To compare any two runs task by task:
 
 ```bash
 python scripts/help_harm.py --cheap runs/gaia_nano_cheap/tasks.jsonl --advised runs/gaia_nano_hybrid/tasks.jsonl
@@ -450,9 +459,48 @@ Each run writes the following files to `runs/<condition_id>/`:
 | `messages.jsonl` | One row per advisor message: trigger, speaker, format, text, parsed DNA fields, whether a hand-off was executed |
 | `trace.jsonl` | The step-by-step trajectory: executor actions, tool observations, advisor events |
 
-The `results/*.jsonl` files and the `runs/e1_*`, `runs/e2_*` and `runs/repro_*`
-directories are earlier development runs. They used smaller task subsets and
-older settings, and they are not used for the tables.
+The `results/hotpotqa_*.jsonl` files and the `runs/e1_*`, `runs/e2_*` and
+`runs/repro_*` directories are earlier HotpotQA development runs. They used
+smaller task subsets and older settings, and they are not used for the tables.
+The GAIA development runs are not distributed (see [GAIA data](#gaia-data)).
+
+## GAIA data
+
+[GAIA](https://huggingface.co/datasets/gaia-benchmark/GAIA) is a gated dataset
+whose terms ask users not to reshare its questions, attachments, or answers in
+crawlable form. This repository therefore contains **no** GAIA questions,
+answers, attachments, task-id lists, or per-task GAIA logs (`tasks.jsonl`,
+`trace.jsonl`, `messages.jsonl`), and `.gitignore` keeps them from being
+committed. The aggregate GAIA numbers are the ones reported above and in the
+paper.
+
+To run GAIA yourself:
+
+1. Log in to Hugging Face, open
+   <https://huggingface.co/datasets/gaia-benchmark/GAIA>, and accept the terms
+   to request access.
+2. Create a read token at <https://huggingface.co/settings/tokens>. Put it in
+   `.env` as `HF_TOKEN=hf_...`, export it as `HF_TOKEN`, or run
+   `huggingface-cli login`. Never commit the token.
+3. Run the GAIA conditions. The loader (`datasets_loader.load_gaia`) fetches
+   `gaia-benchmark/GAIA`, config `2023_all`, validation split (165 tasks) at
+   runtime. Task attachments are downloaded into your local Hugging Face cache
+   on demand.
+
+   ```bash
+   python run_condition.py --condition gaia_nano_hybrid --limit 5          # smoke test
+   python scripts/run_experiment_plan.py --only "gaia_*"                   # all GAIA conditions
+   python scripts/run_experiment_plan.py --table table1_initiation --only "gaia_*"
+   python scripts/paper_tables.py                                          # adds the GAIA rows
+   ```
+
+The GAIA runs are written to `runs/gaia_*/` and are gitignored. Keep them
+local.
+
+The format examples in the GAIA executor prompt (`gaia_runner.py`) and in the
+answer-reformatter prompt were replaced with neutral ones before release. The
+rules themselves are unchanged. Re-runs may therefore differ slightly from the
+paper's GAIA numbers.
 
 ## Repository layout
 
@@ -471,7 +519,7 @@ configs/conditions/         one YAML per condition (generated)
 configs/paper_tables.yaml   conditions behind each paper table (generated)
 prompts/                    advisor message prompts
 scripts/                    table runner, table builder, statistics, model checks, vLLM launcher
-runs/                       per-condition trajectory logs
+runs/                       per-condition trajectory logs (HotpotQA only; GAIA runs stay local)
 ```
 
 ## Notes
